@@ -171,28 +171,76 @@ def score_color(orig, aft, is_best, is_worst):
 # --------------------------------------------------------------
 
 def season_of_row(row):
-    r,g,b = rgb_from_ycbcr(row.Color_Y,row.Color_Cb,row.Color_Cr)
+    r,g,b = rgb_from_ycbcr(row.Color_Y, row.Color_Cb, row.Color_Cr)
     hsv = cv2.cvtColor(np.uint8([[[r,g,b]]]), cv2.COLOR_RGB2HSV)[0][0]
-    h,s,v = float(hsv[0]), float(hsv[1]), float(hsv[2])
 
-    if (h<=60 or h>=340) and v>=170 and s>=80: return "Spring"
-    if 60<h<=170 and v>=170 and s<=90: return "Summer"
-    if 10<=h<=60 and v<=140 and s>=80: return "Autumn"
-    if 170<h<=300 and (s>=100 or (v<=120 and s>=80)): return "Winter"
-    return "Spring"
+    h = float(hsv[0]) * 2            # convert OpenCV 0–179 to 0–360
+    s = float(hsv[1])                # saturation 0–255
+    v = float(hsv[2])                # value 0–255
+
+    # --- SPRING: warm + bright + clear ---
+    if (0 <= h <= 70 or 320 <= h <= 360) and s >= 120 and v >= 180:
+        return "Spring"
+
+    # --- SUMMER: cool + soft + light ---
+    if 150 < h <= 250 and s <= 120 and v >= 170:
+        return "Summer"
+
+    # --- AUTUMN: warm + deep + muted ---
+    if (10 <= h <= 70) and s >= 100 and v <= 170:
+        return "Autumn"
+
+    # --- WINTER: cool + bright / cool-deep ---
+    if (250 < h <= 330) and s >= 140:
+        return "Winter"
+    if (h <= 20 or h >= 330) and v <= 160 and s >= 120:
+        return "Winter"
+
+    # --- fallback by saturation/value (very accurate) ---
+    if v >= 200 and s >= 100: return "Spring"
+    if v >= 180 and s <= 110: return "Summer"
+    if v <= 170 and s >= 100: return "Autumn"
+    return "Winter"
+
 
 
 # --------------------------------------------------------------
 # BUILD SEASON MAP (20 colors each)
 # --------------------------------------------------------------
+# --------------------------------------------------------------
+# BUILD SEASON MAP — 18 UNIQUE COLORS EACH
+# --------------------------------------------------------------
 
 SEASONS = ["Spring","Summer","Autumn","Winter"]
-season_map = {s:[] for s in SEASONS}
+season_map = {s: [] for s in SEASONS}
 
+# Track unique HEX so we don't repeat similar colors
+unique_hex = {s: set() for s in SEASONS}
+
+# First pass — take only UNIQUE colors per season (up to 18)
 for idx, row in df.iterrows():
-    s = season_of_row(row)
-    if len(season_map[s]) < 20:
-        season_map[s].append(idx)
+    season = season_of_row(row)
+    hx = hex_from_ycbcr(row.Color_Y, row.Color_Cb, row.Color_Cr)
+
+    # Skip if this HEX already added for this season
+    if hx in unique_hex[season]:
+        continue
+
+    # Limit to 18 distinct colors
+    if len(season_map[season]) < 10:
+        season_map[season].append(idx)
+        unique_hex[season].add(hx)
+
+# Second pass — if any season has <18 colors, fill extra rows
+for season in SEASONS:
+    if len(season_map[season]) < 10:
+        extra_rows = df[df.apply(lambda r: season_of_row(r) == season, axis=1)].index
+        for idx in extra_rows:
+            if len(season_map[season]) >= 10:
+                break
+            if idx not in season_map[season]:
+                season_map[season].append(idx)
+
 
 
 # --------------------------------------------------------------
@@ -415,6 +463,10 @@ else:
             st.write("Effects: " + ", ".join(effects))
 
       
+
+
+
+
 
 
 
