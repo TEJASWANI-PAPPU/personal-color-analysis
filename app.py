@@ -1,3 +1,4 @@
+# app.py
 import streamlit as st
 import cv2
 import numpy as np
@@ -5,249 +6,211 @@ import pandas as pd
 from PIL import Image
 import io, os, math
 
-st.set_page_config(page_title="Personal Color Analysis", layout="wide")
+st.set_page_config(page_title="Personal Color Analysis — RGB (Final)", layout="wide")
 
-CSV_NAME = "skin_tone_color_analysis_dataset.csv"
+CSV_NAME = "dataset_rgb.csv"
 if not os.path.exists(CSV_NAME):
-    st.error(f"CSV not found: {CSV_NAME}")
+    st.error(f"Dataset not found: {CSV_NAME}. Place dataset_rgb.csv in app folder.")
     st.stop()
 
 df = pd.read_csv(CSV_NAME)
-expected = {"ID","SkinTone_Y","SkinTone_Cb","SkinTone_Cr",
-            "Color_Y","Color_Cb","Color_Cr","Label"}
-if not expected.issubset(df.columns):
-    st.error("CSV missing required columns.")
+
+expected = {"ID","SkinTone_Y","SkinTone_Cb","SkinTone_Cr","R","G","B","HEX","Label","ColorName"}
+if not expected.issubset(set(df.columns)):
+    st.error("CSV missing required columns. Expected: ID,SkinTone_Y,SkinTone_Cb,SkinTone_Cr,R,G,B,HEX,Label,ColorName")
     st.stop()
 
-# --------------------------------------------------------------
-# UTILITIES
-# --------------------------------------------------------------
+# -------------------------
+# Helpers: color conversions
+# -------------------------
+def hex_to_rgb(hexcode):
+    h = str(hexcode).lstrip('#')
+    return (int(h[0:2],16), int(h[2:4],16), int(h[4:6],16))
 
-def rgb_from_ycbcr(Y, Cb, Cr):
-    y,cb,cr=float(Y),float(Cb),float(Cr)
-    r=1.164*(y-16)+1.596*(cr-128)
-    g=1.164*(y-16)-0.392*(cb-128)-0.813*(cr-128)
-    b=1.164*(y-16)+2.017*(cb-128)
-    arr=np.clip([r,g,b],0,255).astype(np.uint8)
-    return int(arr[0]),int(arr[1]),int(arr[2])
+def rgb_to_hex(r,g,b):
+    return f"#{int(r):02x}{int(g):02x}{int(b):02x}"
 
-def hex_from_ycbcr(Y,Cb,Cr):
-    r,g,b=rgb_from_ycbcr(Y,Cb,Cr)
-    return f"#{r:02x}{g:02x}{b:02x}"
+def rgb_to_ycbcr_bt601_fullrange(r,g,b):
+    # use same formula used earlier (approx BT.601 full range)
+    y  =  16 + (65.738*r + 129.057*g + 25.064*b)/256
+    cb = 128 + (-37.945*r - 74.494*g + 112.439*b)/256
+    cr = 128 + (112.439*r - 94.154*g - 18.285*b)/256
+    return float(y), float(cb), float(cr)
 
-def pil_to_cv(p): 
+# -------------------------
+# Face detection + skin extraction
+# -------------------------
+def pil_to_cv(p):
     return cv2.cvtColor(np.array(p), cv2.COLOR_RGB2BGR)
 
-def cv_to_pil(c): 
+def cv_to_pil(c):
     return Image.fromarray(cv2.cvtColor(c, cv2.COLOR_BGR2RGB))
-
-# --------------------------------------------------------------
-# FACE DETECTION + SKIN EXTRACTION
-# --------------------------------------------------------------
 
 def detect_face_box(cv_img):
     gray=cv2.cvtColor(cv_img,cv2.COLOR_BGR2GRAY)
-    cas=cv2.CascadeClassifier(cv2.data.haarcascades+
-                              "haarcascade_frontalface_default.xml")
+    cas=cv2.CascadeClassifier(cv2.data.haarcascades+"haarcascade_frontalface_default.xml")
     faces=cas.detectMultiScale(gray,1.1,4,minSize=(60,60))
-    if len(faces)==0: 
+    if len(faces)==0:
         return None
-    
     x,y,w,h = sorted(faces,key=lambda r:r[2]*r[3],reverse=True)[0]
     pad=int(w*0.13)
     return (max(0,x-pad), max(0,y-pad), w+2*pad, h+2*pad)
 
 def skin_mask_roi(roi):
+    # roi expected in BGR (cv image)
     ycc=cv2.cvtColor(roi,cv2.COLOR_BGR2YCrCb)
-    Y=ycc[:,:,0]; Cr=ycc[:,:,1]; Cb=ycc[:,:,2]
-    mask=np.logical_and.reduce(
-        (Y>40,Y<240,Cb>75,Cb<180,Cr>130,Cr<200)
-    ).astype(np.uint8)*255
-    return cv2.medianBlur(mask,5)
+    Y,Cr,Cb = ycc[:,:,0], ycc[:,:,1], ycc[:,:,2]
+    # relaxed bounds to work in varied lighting, then morphological cleanup
+    mask = ((Cb>=70)&(Cb<=140)&(Cr>=135)&(Cr<=200)).astype(np.uint8)*255
+    kernel = np.ones((5,5),np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    mask = cv2.medianBlur(mask,5)
+    return mask
 
 def median_skin(roi,mask):
     ycc=cv2.cvtColor(roi,cv2.COLOR_BGR2YCrCb)
-    if mask.sum()==0:
-        return (int(np.median(ycc[:,:,0])),
-                int(np.median(ycc[:,:,2])),
-                int(np.median(ycc[:,:,1])))
+    if mask is None or mask.sum()==0:
+        return (int(np.median(ycc[:,:,0])), int(np.median(ycc[:,:,2])), int(np.median(ycc[:,:,1])))
+    ys = ycc[:,:,0][mask==255]
+    crs = ycc[:,:,1][mask==255]
+    cbs = ycc[:,:,2][mask==255]
+    return (int(np.median(ys)), int(np.median(cbs)), int(np.median(crs)))
 
-    return (
-        int(np.median(ycc[:,:,0][mask==255])),
-        int(np.median(ycc[:,:,2][mask==255])),
-        int(np.median(ycc[:,:,1][mask==255]))
-    )
+# -------------------------
+# Skin classification to avoid fair/wheat mistakes
+# -------------------------
+def classify_skin_tone(Y, Cb, Cr):
+    diff = Cr - Cb
+    if Y > 165 and diff < 18:
+        return "Fair"
+    if (150 < Y <= 170) or (18 <= diff <= 30):
+        return "Medium"
+    return "Dark"
 
+# -------------------------
+# nearest skin ID (based on SkinTone YCbCr in dataset)
+# -------------------------
 def nearest_skin(Y,Cb,Cr,df):
-    uniq=df[["ID","SkinTone_Y","SkinTone_Cb","SkinTone_Cr"]].drop_duplicates()
-    d=np.sqrt((uniq.SkinTone_Y-Y)**2 + 
-              (uniq.SkinTone_Cb-Cb)**2 +
-              (uniq.SkinTone_Cr-Cr)**2)
-    i=int(np.argmin(d))
-    ID=int(uniq.iloc[i].ID)
-    return ID, df[df.ID==ID]
+    uniq = df[["ID","SkinTone_Y","SkinTone_Cb","SkinTone_Cr"]].drop_duplicates().reset_index(drop=True)
+    d = np.sqrt((uniq.SkinTone_Y - Y)**2 + (uniq.SkinTone_Cb - Cb)**2 + (uniq.SkinTone_Cr - Cr)**2)
+    i = int(np.argmin(d.values))
+    ID = int(uniq.loc[i,"ID"])
+    return ID
 
-# --------------------------------------------------------------
-# FACE METRICS
-# --------------------------------------------------------------
+# -------------------------
+# Face metrics for comparison
+# -------------------------
+def face_metrics(face_pil):
+    arr = np.array(face_pil)
+    if arr.size == 0:
+        return 0.0,0.0,0.0,0.0,0.0
+    # convert rgb arrays
+    y = cv2.cvtColor(arr, cv2.COLOR_RGB2YCrCb)[:,:,0].mean()
+    s = cv2.cvtColor(arr, cv2.COLOR_RGB2HSV)[:,:,1].mean()
+    c = arr.std()
+    lab = cv2.cvtColor(arr, cv2.COLOR_RGB2LAB)
+    A = lab[:,:,1].mean()
+    B = lab[:,:,2].mean()
+    return float(y), float(s), float(c), float(A), float(B)
 
-def face_metrics(face):
-    arr=np.array(face)
-    if arr.size==0: return 0,0,0,0,0
-
-    y=cv2.cvtColor(arr,cv2.COLOR_RGB2YCrCb)[:,:,0].mean()
-    s=cv2.cvtColor(arr,cv2.COLOR_RGB2HSV)[:,:,1].mean()
-    c=arr.std()
-    lab=cv2.cvtColor(arr,cv2.COLOR_RGB2LAB)
-    A=lab[:,:,1].mean()
-    B=lab[:,:,2].mean()
-    return float(y),float(s),float(c),float(A),float(B)
-
-# --------------------------------------------------------------
-# DRAPE
-# --------------------------------------------------------------
-
-def build_drape(img,box,rgb):
-    W,H=img.size
+# -------------------------
+# Build drape with RGB
+# -------------------------
+def build_drape(img_pil, box, rgb):
+    # img_pil: PIL RGB
+    W,H = img_pil.size
     x,y,w,h = box
-    dr_y = y+h - int(H*0.05)
-    dr_y = max(0,dr_y)
+    dr_y = y + h - int(H*0.05)
+    dr_y = max(0, dr_y)
     dr_h = H - dr_y
-
-    base = img.copy().convert("RGBA")
-    drape = Image.new("RGBA",(W,dr_h),(rgb[0],rgb[1],rgb[2],255))
-    base.paste(drape,(0,dr_y),drape)
+    base = img_pil.copy().convert("RGBA")
+    drape = Image.new("RGBA", (W, dr_h), (int(rgb[0]), int(rgb[1]), int(rgb[2]), 255))
+    base.paste(drape, (0, dr_y), drape)
     return base.convert("RGB")
-# --------------------------------------------------------------
-# SCORING SYSTEM (BEST / WORST guaranteed + PCA logic)
-# --------------------------------------------------------------
 
+# -------------------------
+# Scoring system (same idea as before, tuned for RGB)
+# -------------------------
 def score_color(orig, aft, is_best, is_worst):
-
-    # FORCE BEST RESULT
     if is_best:
-        return ("YES — This is your BEST color 💖",
-                "Always flattering",
-                ["Glow","Clear skin"])
-
-    # FORCE WORST RESULT
+        return ("YES — This is your BEST color 💖", "Always flattering", ["Glow","Clear skin"])
     if is_worst:
-        return ("NO — This is your WORST color ❌",
-                "Not suitable",
-                ["Dull","Emphasises shadows"])
-
-    # PCA scoring for all other colors
-    oB,oS,oC,oA,oBb = orig
-    B,S,C,A,Bb = aft
-
-    dB=B-oB
-    dS=S-oS
-    dC=C-oC
-    dA=A-oA
-    dBl=Bb-oBb
-
+        return ("NO — This is your WORST color ❌", "Not suitable", ["Dull","Emphasises shadows"])
+    oY,oS,oC,oA,oB = orig
+    aY,aS,aC,aA,aB = aft
+    dY = aY - oY
+    dS = aS - oS
+    dC = aC - oC
+    dA = aA - oA
+    dB = aB - oB
     score = 0
-    if dB>1: score+=2
-    if dS>1: score+=2
-    if dC>0.8: score+=1
-    if abs(dA)<5 and abs(dBl)<5: score+=1
-
-    if score>=5:
-        return ("YES — suits you",
-                "Bright & Vibrant",
-                ["Glow","Sharper"])
-    elif score>=3:
-        return ("OK — Moderately Good",
-                "Soft Effect",
-                ["Subtle","Natural"])
+    if dY > 1: score += 2
+    if dS > 2: score += 2
+    if dC > 0.8: score += 1
+    if abs(dA) < 5 and abs(dB) < 5: score += 1
+    if score >= 5:
+        return ("YES — suits you","Bright & Vibrant",["Glow","Sharper"])
+    elif score >= 3:
+        return ("OK — Moderately Good","Soft Effect",["Subtle","Natural"])
     else:
-        return ("NO — Not Suitable",
-                "Dulls Features",
-                ["Flat","Low contrast"])
+        return ("NO — Not Suitable","Dulls Features",["Flat","Low contrast"])
 
-
-# --------------------------------------------------------------
-# SEASON CATEGORY (Spring, Summer, Autumn, Winter)
-# --------------------------------------------------------------
-
-def season_of_row(row):
-    r,g,b = rgb_from_ycbcr(row.Color_Y, row.Color_Cb, row.Color_Cr)
+# -------------------------
+# Season mapping from HEX (HSV based)
+# -------------------------
+def season_of_hex(hx):
+    r,g,b = hex_to_rgb(hx)
     hsv = cv2.cvtColor(np.uint8([[[r,g,b]]]), cv2.COLOR_RGB2HSV)[0][0]
-
-    h = float(hsv[0]) * 2            # convert OpenCV 0–179 to 0–360
-    s = float(hsv[1])                # saturation 0–255
-    v = float(hsv[2])                # value 0–255
-
-    # --- SPRING: warm + bright + clear ---
-    if (0 <= h <= 70 or 320 <= h <= 360) and s >= 120 and v >= 180:
+    h = float(hsv[0]) * 2        # 0-360
+    s = float(hsv[1])            # 0-255
+    v = float(hsv[2])            # 0-255
+    # Spring: warm + bright + clear
+    if (0 <= h <= 70 or 320 <= h <= 360) and s >= 110 and v >= 180:
         return "Spring"
-
-    # --- SUMMER: cool + soft + light ---
+    # Summer: cool + soft + light
     if 150 < h <= 250 and s <= 120 and v >= 170:
         return "Summer"
-
-    # --- AUTUMN: warm + deep + muted ---
-    if (10 <= h <= 70) and s >= 100 and v <= 170:
+    # Autumn: warm + deep + muted
+    if (10 <= h <= 70) and s >= 90 and v <= 170:
         return "Autumn"
-
-    # --- WINTER: cool + bright / cool-deep ---
-    if (250 < h <= 330) and s >= 140:
+    # Winter: cool + bright / cool-deep
+    if (250 < h <= 330) and s >= 130:
         return "Winter"
     if (h <= 20 or h >= 330) and v <= 160 and s >= 120:
         return "Winter"
-
-    # --- fallback by saturation/value (very accurate) ---
     if v >= 200 and s >= 100: return "Spring"
     if v >= 180 and s <= 110: return "Summer"
     if v <= 170 and s >= 100: return "Autumn"
     return "Winter"
 
-
-
-# --------------------------------------------------------------
-# BUILD SEASON MAP (20 colors each)
-# --------------------------------------------------------------
-# --------------------------------------------------------------
-# BUILD SEASON MAP — 18 UNIQUE COLORS EACH
-# --------------------------------------------------------------
-
+# Build season_map (unique HEX per season from df)
 SEASONS = ["Spring","Summer","Autumn","Winter"]
 season_map = {s: [] for s in SEASONS}
-
-# Track unique HEX so we don't repeat similar colors
-unique_hex = {s: set() for s in SEASONS}
-
-# First pass — take only UNIQUE colors per season (up to 18)
-for idx, row in df.iterrows():
-    season = season_of_row(row)
-    hx = hex_from_ycbcr(row.Color_Y, row.Color_Cb, row.Color_Cr)
-
-    # Skip if this HEX already added for this season
-    if hx in unique_hex[season]:
-        continue
-
-    # Limit to 18 distinct colors
-    if len(season_map[season]) < 10:
+unique_hex = {s:set() for s in SEASONS}
+# collect up to 12 per season
+for idx,row in df.iterrows():
+    hx = row.HEX
+    try:
+        season = season_of_hex(hx)
+    except:
+        season = "Spring"
+    if hx in unique_hex[season]: continue
+    if len(season_map[season]) < 12:
         season_map[season].append(idx)
         unique_hex[season].add(hx)
+# fill if any season short
+for s in SEASONS:
+    if len(season_map[s]) < 12:
+        extras = df[df.HEX.apply(lambda x: season_of_hex(x)==s)].index.tolist()
+        for idx in extras:
+            if len(season_map[s]) >= 12: break
+            if idx not in season_map[s]:
+                season_map[s].append(idx)
 
-# Second pass — if any season has <18 colors, fill extra rows
-for season in SEASONS:
-    if len(season_map[season]) < 10:
-        extra_rows = df[df.apply(lambda r: season_of_row(r) == season, axis=1)].index
-        for idx in extra_rows:
-            if len(season_map[season]) >= 10:
-                break
-            if idx not in season_map[season]:
-                season_map[season].append(idx)
-
-
-
-# --------------------------------------------------------------
-# UI SETUP
-# --------------------------------------------------------------
-
-st.title("Personal Color Analysis — PCA Multi-Color System")
+# -------------------------
+# UI state
+# -------------------------
+st.title("Personal Color Analysis — PCA RGB (Final)")
 
 if "selected" not in st.session_state:
     st.session_state.selected = []
@@ -255,15 +218,12 @@ if "selected" not in st.session_state:
 if "last_img" not in st.session_state:
     st.session_state.last_img = None
 
-
-# --------------------------------------------------------------
-# IMAGE INPUT
-# --------------------------------------------------------------
-
+# -------------------------
+# Image input
+# -------------------------
 st.header("1) Upload or Take Photo")
-
 cam = st.camera_input("Take Photo")
-up = st.file_uploader("Or Upload Image")
+up = st.file_uploader("Or Upload Image", type=["jpg","jpeg","png"])
 
 img = None
 raw = None
@@ -282,18 +242,11 @@ if raw and st.session_state.last_img != raw:
 if img is None:
     st.stop()
 
-# SMALL DISPLAY
-small = img.resize((int(img.width * 0.40), int(img.height * 0.40)))
+small = img.resize((int(img.width*0.40), int(img.height*0.40)))
 st.image(small)
-
-
-# --------------------------------------------------------------
-# FACE DETECTION
-# --------------------------------------------------------------
 
 cv = pil_to_cv(img)
 box = detect_face_box(cv)
-
 if box is None:
     st.warning("Face not detected. Try better lighting & straight face.")
     st.stop()
@@ -302,162 +255,110 @@ x,y,w,h = box
 roi = cv[y:y+h, x:x+w]
 
 mask = skin_mask_roi(roi)
-Y,Cb,Cr = median_skin(roi,mask)
+Y, Cb, Cr = median_skin(roi, mask)
 
-st.success(f"Skin tone detected: Y={Y} Cb={Cb} Cr={Cr}")
+# slight adaptive brightness push for fairness separation
+Y = float(min(255, Y * 1.05))
 
+st.success(f"Skin detected: Y={Y:.1f} Cb={Cb:.1f} Cr={Cr:.1f}  — Category: {classify_skin_tone(Y,Cb,Cr)}")
 
-# --------------------------------------------------------------
-# MATCH BEST/WORST FROM DATASET
-# --------------------------------------------------------------
-
-ID, matched_rows = nearest_skin(Y,Cb,Cr,df)
+ID = nearest_skin(Y,Cb,Cr,df)
+matched_rows = df[df.ID==ID]
 
 best = matched_rows[matched_rows.Label.str.lower()=="best"].head(5)
 worst = matched_rows[matched_rows.Label.str.lower()=="worst"].head(5)
-# --------------------------------------------------------------
-# 2) BEST & WORST COLORS SECTION
-# --------------------------------------------------------------
 
+# -------------------------
+# Best & Worst display
+# -------------------------
 st.header("2) Suggested Colors (Best & Worst)")
 
-# ---------------- BEST COLORS ----------------
 st.subheader("Best 5 Colors")
 best_cols = st.columns(5)
-
 for i in range(5):
     if i < len(best):
         r = best.iloc[i]
-        hx = hex_from_ycbcr(r.Color_Y, r.Color_Cb, r.Color_Cr)
-
+        hx = r.HEX
+        rgb = (int(r.R), int(r.G), int(r.B))
         with best_cols[i]:
-            st.markdown(
-                f"<div style='height:60px;border-radius:8px;background:{hx}'></div>",
-                unsafe_allow_html=True
-            )
-            if st.button(f"Select Best {i+1}"):
-                st.session_state.selected.append({
-                    "idx": int(r.name),
-                    "type": "best"
-                })
+            st.markdown(f"<div style='height:60px;border-radius:8px;background:{hx}'></div>", unsafe_allow_html=True)
+            if st.button(f"Select Best {i+1}", key=f"b{i}"):
+                st.session_state.selected.append({"idx": int(r.name), "type":"best"})
 
-
-# ---------------- WORST COLORS ----------------
 st.subheader("Worst 5 Colors")
 worst_cols = st.columns(5)
-
 for i in range(5):
     if i < len(worst):
         r = worst.iloc[i]
-        hx = hex_from_ycbcr(r.Color_Y, r.Color_Cb, r.Color_Cr)
-
+        hx = r.HEX
         with worst_cols[i]:
-            st.markdown(
-                f"<div style='height:60px;border-radius:8px;background:{hx}'></div>",
-                unsafe_allow_html=True
-            )
-            if st.button(f"Select Worst {i+1}"):
-                st.session_state.selected.append({
-                    "idx": int(r.name),
-                    "type": "worst"
-                })
+            st.markdown(f"<div style='height:60px;border-radius:8px;background:{hx}'></div>", unsafe_allow_html=True)
+            if st.button(f"Select Worst {i+1}", key=f"w{i}"):
+                st.session_state.selected.append({"idx": int(r.name), "type":"worst"})
 
-
-# --------------------------------------------------------------
-# 3) SEASONAL PALETTE (Spring / Summer / Autumn / Winter)
-# --------------------------------------------------------------
-
-st.header("3) Seasonal Palettes (Choose any colors to test)")
-
+# -------------------------
+# Seasonal palettes
+# -------------------------
+st.header("3) Seasonal Palettes (pick any color to test)")
 for season in SEASONS:
     with st.expander(season):
-
         cols = st.columns(6)
         season_rows = season_map[season]
-
         for position, row_idx in enumerate(season_rows):
             row = df.loc[row_idx]
-            hx = hex_from_ycbcr(row.Color_Y, row.Color_Cb, row.Color_Cr)
-
+            hx = row.HEX
             col = cols[position % 6]
             with col:
-                st.markdown(
-                    f"<div style='height:45px;border-radius:6px;background:{hx}'></div>",
-                    unsafe_allow_html=True
-                )
-                if st.button(f"Select {season} {position+1}"):
-                    st.session_state.selected.append({
-                        "idx": row_idx,
-                        "type": "season"
-                    })
-# --------------------------------------------------------------
-# 4) PREVIEW SECTION — SIDE BY SIDE
-# --------------------------------------------------------------
+                st.markdown(f"<div style='height:45px;border-radius:6px;background:{hx}'></div>", unsafe_allow_html=True)
+                if st.button(f"Select {season} {position+1}", key=f"{season}_{position}"):
+                    st.session_state.selected.append({"idx": int(row_idx), "type":"season"})
 
+# -------------------------
+# Preview section — side by side
+# -------------------------
 st.header("4) Color Preview — Side by Side Comparison")
-
-# ORIGINAL FACE METRICS
 face_before = img.crop((x, y, x+w, y+h))
 orig_metrics = face_metrics(face_before)
 
 if len(st.session_state.selected) == 0:
     st.info("Select any color above to preview how it affects your face.")
 else:
-    # For each selected color → show preview
     for sel in st.session_state.selected:
-
         if sel["idx"] not in df.index:
             continue
-
         row = df.loc[sel["idx"]]
-        rgb = rgb_from_ycbcr(row.Color_Y, row.Color_Cb, row.Color_Cr)
-        hx = hex_from_ycbcr(row.Color_Y, row.Color_Cb, row.Color_Cr)
-
-        # Build drape
+        rgb = (int(row.R), int(row.G), int(row.B))
+        hx = row.HEX
         after_img = build_drape(img, (x,y,w,h), rgb)
-
-        # Crop face after drape
         face_after = after_img.crop((x, y, x+w, y+h))
         aft_metrics = face_metrics(face_after)
-
-        # Score
         is_best = sel["type"] == "best"
         is_worst = sel["type"] == "worst"
-        verdict, subtitle, effects = score_color(
-            orig_metrics,
-            aft_metrics,
-            is_best,
-            is_worst
-        )
+        verdict, subtitle, effects = score_color(orig_metrics, aft_metrics, is_best, is_worst)
 
-        # Title for each selected color
-        st.markdown(f"## {sel['type'].upper()} — {hx}")
-
-        # Two columns: Original vs Drape
+        st.markdown(f"## {sel['type'].upper()} — {hx} — {row.ColorName}")
         c1, c2 = st.columns([1,1])
 
-        # ---- ORIGINAL IMAGE + METRICS ----
         with c1:
             st.write("### Original")
-            st.image(
-                img.resize((int(img.width*0.40), int(img.height*0.40))),
-                use_container_width=False
-            )
+            st.image(face_before.resize((int(face_before.width*1.5), int(face_before.height*1.5))))
             st.write(f"Brightness: {orig_metrics[0]:.1f}")
             st.write(f"Saturation: {orig_metrics[1]:.1f}")
             st.write(f"Contrast: {orig_metrics[2]:.1f}")
 
-        # ---- DRAPE IMAGE + METRICS ----
         with c2:
             st.write("### With Selected Color")
-            st.image(
-                after_img.resize((int(img.width*0.40), int(img.height*0.40))),
-                use_container_width=False
-            )
+            st.image(face_after.resize((int(face_after.width*1.5), int(face_after.height*1.5))))
             st.write(f"Brightness Δ {aft_metrics[0] - orig_metrics[0]:+.1f}")
             st.write(f"Saturation Δ {aft_metrics[1] - orig_metrics[1]:+.1f}")
             st.write(f"Contrast Δ {aft_metrics[2] - orig_metrics[2]:+.1f}")
-
             st.markdown(f"### Verdict: **{verdict}**")
             st.markdown(f"**{subtitle}**")
             st.write("Effects: " + ", ".join(effects))
+
+# -------------------------
+# Optional: clear selection
+# -------------------------
+if st.button("Clear selections"):
+    st.session_state.selected = []
+    st.success("Cleared")
