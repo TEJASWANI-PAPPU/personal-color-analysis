@@ -79,13 +79,13 @@ def median_skin(roi,mask):
 # -------------------------
 # Skin classification to avoid fair/wheat mistakes
 # -------------------------
-def classify_skin_tone(Y, Cb, Cr):
-    diff = Cr - Cb
-    if Y > 165 and diff < 18:
-        return "Fair"
-    if (150 < Y <= 170) or (18 <= diff <= 30):
-        return "Medium"
-    return "Dark"
+#def classify_skin_tone(Y, Cb, Cr):
+ #  diff = Cr - Cb
+  #  if Y > 165 and diff < 18:
+    #    return "Fair"
+  #  if (150 < Y <= 170) or (18 <= diff <= 30):
+    #    return "Medium"
+ #   return "Dark"
 
 # -------------------------
 # nearest skin ID (based on SkinTone YCbCr in dataset)
@@ -259,8 +259,8 @@ Y, Cb, Cr = median_skin(roi, mask)
 
 # slight adaptive brightness push for fairness separation
 Y = float(min(255, Y * 1.05))
-
-st.success(f"Skin detected: Y={Y:.1f} Cb={Cb:.1f} Cr={Cr:.1f}  — Category: {classify_skin_tone(Y,Cb,Cr)}")
+st.success(f"Skin detected: Y={Y:.1f} Cb={Cb:.1f} Cr={Cr:.1f}")
+#st.success(f"Skin detected: Y={Y:.1f} Cb={Cb:.1f} Cr={Cr:.1f}  — Category: {classify_skin_tone(Y,Cb,Cr)}")
 
 ID = nearest_skin(Y,Cb,Cr,df)
 matched_rows = df[df.ID==ID]
