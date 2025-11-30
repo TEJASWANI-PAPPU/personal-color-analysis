@@ -331,10 +331,10 @@ else:
         st.write(f"LAB B: {B:.2f}      (Δ {dB:+.2f})")
 
         st.write(f"### Score: **{p['score']}/10**")
-        if p["pct"] >= 70:
+        if p["pct"] >= 75:
            
             st.write("YES — Highly Suitable")
-        elif p["pct"] >= 50:
+        elif p["pct"] >= 65:
           
             st.write("OK — Moderately Suitable")
         else:
