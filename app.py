@@ -334,7 +334,7 @@ else:
         if p["pct"] >= 70:
            
             st.write("YES — Highly Suitable")
-        elif p["pct"] >= 60:
+        elif p["pct"] >= 50:
           
             st.write("OK — Moderately Suitable")
         else:
