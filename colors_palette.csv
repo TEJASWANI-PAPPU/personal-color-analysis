@@ -1,0 +1,43 @@
+ID,ColorName,HEX,Category
+1,Light Blue,#ADD8E6,Blue
+2,Sky Blue,#87CEEB,Blue
+3,Royal Blue,#4169E1,Blue
+4,Steel Blue,#4682B4,Blue
+5,Dodger Blue,#1E90FF,Blue
+6,Navy Blue,#000080,Blue
+7,Lavender,#E6E6FA,Purple
+8,Lilac,#C8A2C8,Purple
+9,Medium Purple,#9370DB,Purple
+10,Orchid,#BA55D3,Purple
+11,Purple,#800080,Purple
+12,Indigo,#4B0082,Purple
+13,Light Pink,#FFB6C1,Pink
+14,Hot Pink,#FF69B4,Pink
+15,Deep Pink,#FF1493,Pink
+16,Soft Red,#FF7F7F,Pink
+17,Tomato,#FF6347,Pink
+18,Crimson,#DC143C,Pink
+19,Peach,#FFDAB9,Orange
+20,Apricot,#FFCC99,Orange
+21,Coral,#FF7F50,Orange
+22,Burnt Orange,#FF4500,Orange
+23,Rust,#E97451,Orange
+24,Chocolate,#D2691E,Orange
+25,Light Yellow,#FFFFE0,Yellow
+26,Lemon,#FFFACD,Yellow
+27,Yellow,#FFFF00,Yellow
+28,Gold,#FFD700,Yellow
+29,Saffron,#F4C430,Yellow
+30,Golden Rod,#DAA520,Yellow
+31,Mint,#98FB98,Green
+32,Light Green,#90EE90,Green
+33,Sea Green,#2E8B57,Green
+34,Teal,#008080,Green
+35,Forest Green,#228B22,Green
+36,Emerald,#50C878,Green
+37,White,#FFFFFF,Neutral
+38,Black,#000000,Neutral
+39,Grey,#808080,Neutral
+40,Light Grey,#D3D3D3,Neutral
+41,Beige,#F5F5DC,Neutral
+42,Cream,#FFFDD0,Neutral
