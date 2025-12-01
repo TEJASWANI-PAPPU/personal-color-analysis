@@ -183,6 +183,16 @@ for idx, row in df.iterrows():
     after_img = build_drape(img, box, rgb)
     face_after = after_img.crop((x, y, x+w, y+h))
     aft_metrics = face_metrics(face_after)
+    # SOFT FACE TINT SIMULATION (makes changes visible)
+    fb = np.array(face_before).astype(float)
+    fa = np.array(face_after).astype(float)
+
+    # Blend 6% of drape color into the face
+    tint = np.array(rgb).astype(float)
+    tint = np.reshape(tint, (1,1,3))
+
+    face_after = (fb * 0.94 + tint * 0.06).clip(0,255).astype(np.uint8)
+    unface_after = Image.fromarray(face_after)
     final, pct, score10, deltas = compute_score_and_pct(orig_metrics, aft_metrics)
     all_scores.append({
         "df_index": idx,
