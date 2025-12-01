@@ -334,12 +334,15 @@ else:
         if p["pct"] >= 75:
            
             st.write("YES — Highly Suitable")
+            st.write("This color looks amazing to you🫶")
         elif p["pct"] >= 65:
           
             st.write("OK — Moderately Suitable")
+            st.write("This color is okay,but not your best👍")
         else:
           
             st.write("NO — Not Suitable")
+            st.write("Try different colors 👎
         st.markdown("---")
 
 
