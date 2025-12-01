@@ -342,7 +342,7 @@ else:
         else:
           
             st.write("NO — Not Suitable")
-            st.write("Try different colors 👎
+            st.write("Try different colors 👎")
         st.markdown("---")
 
 
